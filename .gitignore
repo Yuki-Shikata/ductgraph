@@ -8,3 +8,9 @@
 *.swp
 *.swo
 *.ba
+
+# Python caches / local env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
