@@ -5,7 +5,6 @@ import os
 import sys
 from pathlib import Path
 from pprint import pprint
-from typing import Any
 
 # Ensure project root is importable even when executed from tools/
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +47,7 @@ def _install_solve_counter_wrapper():
     return orig
 
 from ductgraph.commissioning_scale import commission_and_scale
+from ductgraph.power_curve import PowerPoly3, compute_electric_power_from_shaft_poly
 from cases.real_case import (
     make_net,
     FIXED_P,
@@ -59,55 +59,6 @@ from cases.real_case import (
     EDGE_D,
     choose_maxload_edge,
 )
-
-
-def _m3s_to_cmm(q_m3s: float) -> float:
-    # m^3/s -> m^3/min (cmm)
-    return float(q_m3s) * 60.0
-
-
-def _shaft_power_kw_poly_cmm(q_cmm: float, *, a: float, b: float, c: float, d: float, speed_ratio: float) -> float:
-    """
-    Base (speed_ratio=1) shaft power curve:
-        P0(Q) = a Q^3 + b Q^2 + c Q + d   [kW], Q in cmm.
-
-    Affinity scaling (Q ~ s, P ~ s^3):
-        P(Q,s) = s^3 * P0(Q/s)
-               = a*Q^3 + (b*s)*Q^2 + (c*s^2)*Q + (d*s^3)
-    """
-    Q = float(q_cmm)
-    s = float(speed_ratio)
-    return (a * Q**3) + ((b * s) * Q**2) + ((c * s**2) * Q) + (d * s**3)
-
-
-def _fan_power_from_res(
-    *,
-    res: Any,
-    fan_edge_ids: list[int],
-    speed_ratio: float,
-    a: float,
-    b: float,
-    c: float,
-    d: float,
-    eta_total: float,
-) -> dict[str, float]:
-    """
-    Returns dict with:
-      q_fan_cmm, p_shaft_kw, p_elec_kw
-    """
-    eta = float(eta_total)
-    if not (0.0 < eta <= 1.0):
-        raise ValueError("eta_total must be in (0, 1].")
-
-    q_sum_m3s = 0.0
-    for fe in fan_edge_ids:
-        q_sum_m3s += abs(float(res.q[fe]))
-
-    q_cmm = _m3s_to_cmm(q_sum_m3s)
-    p_shaft = _shaft_power_kw_poly_cmm(q_cmm, a=a, b=b, c=c, d=d, speed_ratio=speed_ratio)
-    p_elec = p_shaft / eta
-    return {"q_fan_cmm": q_cmm, "p_shaft_kw": p_shaft, "p_elec_kw": p_elec}
-
 
 
 def _fmt_table(hs, rs):
@@ -160,7 +111,7 @@ def main() -> int:
     ap.add_argument("--gamma", type=float, default=1.0, help="gamma (sin/linear exponent or exp/expk strength)")
     ap.add_argument("--tol-q", type=float, default=3e-3, help="abs tolerance for |Q|-Qdes match")
     ap.add_argument("--eps-under-rel", type=float, default=1e-4, help="tiny numeric absorb for acceptance (not a display tolerance)")
-    ap.add_argument("--tol-warn-rel", type=float, default=5e-3, help="display tolerance: WARN if Q/Qdes < 1, UNDER if Q/Qdes < 1-tol")
+    ap.add_argument("--tol-warn-rel", type=float, default=0.03, help="display tolerance: WARN if Q/Qdes < 1, UNDER if Q/Qdes < 1-tol")
     ap.add_argument("--fan-q-init", type=float, default=2.0)
     ap.add_argument("--fan-q-cap", type=float, default=80.0)
 
@@ -283,8 +234,9 @@ def main() -> int:
         conv = bool(getattr(cc.res, "converged", False))
         if not conv:
             return "NC"
+        if not bool(getattr(cc, "ok", False)):
+            return "FAIL"
         a = active_map.get(str(cc.name), set(all_terms))
-        under = False
         warn = False
         for eid in a:
             qd = float(Q_DESIGN.get(eid, float("nan")))
@@ -292,11 +244,9 @@ def main() -> int:
                 continue
             q = abs(float(cc.res.q.get(eid, 0.0)))
             r = q / qd
-            if r < (1.0 - float(args.tol_warn_rel)):
-                under = True
-            elif r < 1.0:
+            if r < 1.0:
                 warn = True
-        return "UNDER" if under else ("WARN" if warn else "OK")
+        return "WARN" if warn else "OK"
 
     # ----- summary (2 lines) -----
     rows1, rows2 = [], []
@@ -304,16 +254,28 @@ def main() -> int:
         s_ratio = float(getattr(cc, "speed_ratio", float("nan")))
         hz = float(args.base_hz) * s_ratio
 
-        q_fan_m3s = 0.0
-        for fe in FAN_EDGE_IDS:
-            q_fan_m3s += abs(float(cc.res.q.get(fe, 0.0)))
-        q_fan_cmh = q_fan_m3s * 3600.0
-
-        q_fan_cmm = q_fan_m3s * 60.0
-        a0 = float(args.pw_a); b0 = float(args.pw_b); c0 = float(args.pw_c); d0 = float(args.pw_d)
-        Q = float(q_fan_cmm)
-        p_shaft = (a0 * Q**3) + ((b0 * s_ratio) * Q**2) + ((c0 * s_ratio**2) * Q) + (d0 * s_ratio**3)
-        p_elec = p_shaft / float(args.eta_total)
+        q_fan_cmh = float("nan")
+        p_elec = float("nan")
+        try:
+            pw = compute_electric_power_from_shaft_poly(
+                net,
+                cc.res,
+                fan_edge_ids=FAN_EDGE_IDS,
+                speed_ratio=s_ratio,
+                shaft_poly=PowerPoly3(
+                    a=float(args.pw_a),
+                    b=float(args.pw_b),
+                    c=float(args.pw_c),
+                    d=float(args.pw_d),
+                    f0_hz=float(args.base_hz),
+                ),
+                eta_total=float(args.eta_total),
+            )
+            q_fan_cmh = sum(abs(float(f.Q_m3s)) for f in pw.fans) * 3600.0
+            p_elec = float(pw.elec_total_kw)
+        except ValueError:
+            # non-converged case etc: keep NaN for display table
+            pass
 
         conv = bool(getattr(cc.res, "converged", False))
         iters = int(getattr(cc.res, "iters", -1))
@@ -380,6 +342,9 @@ def main() -> int:
             ])
 
         print(_fmt_table(["edge","theta[deg]","Qdes[cmh]","Q[cmh]","Q/Qdes","flag"], term_rows))
+
+    if TRACE_SOLVER_CALLS:
+        print(f"\n[trace] solve_node_head calls: {_SOLVE_CALLS}")
 
 
 if __name__ == "__main__":
