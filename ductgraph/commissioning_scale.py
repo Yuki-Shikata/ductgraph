@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Iterable
 
 from ductgraph.model import Network
-from ductgraph.solver_nodehead import solve_node_head, SolveResult
+from ductgraph.solver_nodehead import SolveResult
 from ductgraph.control_damper import with_damper_angle
 from ductgraph.control_speed import with_speed_ratio
 from ductgraph.control_cav import solve_cav_dampers_broyden, CavSolveResult
-from ductgraph.commissioning import tune_speed_for_maxload
+from ductgraph.control_speed import tune_speed_for_maxload
+from ductgraph.control_fullopen import eval_fullopen_flows
 
 
 @dataclass
@@ -38,17 +39,6 @@ class CommissionScaleResult:
 
 def _absq(res: SolveResult, edge_id: int) -> float:
     return float(abs(res.q[edge_id]))
-
-
-def _eval_network(
-    net: Network,
-    *,
-    fixed_p: Dict[int, float],
-    d: Dict[int, float],
-    fan_q_init: float,
-    fan_q_cap: float,
-) -> SolveResult:
-    return solve_node_head(net, d=d, fixed_p=fixed_p, fan_q_init=fan_q_init, fan_q_cap=fan_q_cap)
 
 
 def speed_linear_scale(speed_full: float, qsum_active: float, qsum_full: float) -> float:
@@ -258,20 +248,28 @@ def commission_and_scale(
         fullopen_unders: List[Tuple[int, float]] = []
 
         if (not res.converged) or unders:
-            net_s = with_speed_ratio(net, s_case, fan_edge_ids=fan_edge_ids)
-            if off_edges:
-                net_s = with_damper_angle(net_s, {eid: theta_off_deg for eid in off_edges}, model=model, gamma=gamma)
-            net_fo = with_damper_angle(net_s, {eid: 90.0 for eid in active_edges}, model=model, gamma=gamma)
-            res_fo = _eval_network(net_fo, fixed_p=fixed_p, d=d, fan_q_init=fan_q_init, fan_q_cap=fan_q_cap)
-
-            if res_fo.converged:
+            try:
+                q_fo = eval_fullopen_flows(
+                    net,
+                    speed_ratio=s_case,
+                    fan_edge_ids=fan_edge_ids,
+                    cav_edge_ids=active_edges,
+                    fixed_p=fixed_p,
+                    d=d,
+                    model=model,
+                    gamma=gamma,
+                    fan_q_init=fan_q_init,
+                    fan_q_cap=fan_q_cap,
+                )
                 for eid in active_edges:
-                    q = _absq(res_fo, eid)
+                    q = float(q_fo[eid])
                     if q < q_min_req[eid]:
                         fullopen_unders.append((eid, q))
                         fullopen_msgs.append(
                             f"edge {eid}: WARN full-open undershoot: Q={q:.6g} < Qdes={targets[eid]:.6g}"
                         )
+            except RuntimeError:
+                fullopen_msgs.append("WARN full-open check did not converge")
 
         # --- 判定 ---
         ok = True
@@ -293,6 +291,9 @@ def commission_and_scale(
 
         if fullopen_msgs:
             msgs.extend(fullopen_msgs)
+
+        if s_case_clamped:
+            msgs.append(f"WARN speed clamped: {s_case_raw:.6g}->{s_case:.6g}")
 
         if overs:
             msgs.append(

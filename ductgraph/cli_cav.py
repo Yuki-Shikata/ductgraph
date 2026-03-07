@@ -41,10 +41,11 @@ def main() -> None:
     ap.add_argument("--theta_min", type=float, default=0.0)
     ap.add_argument("--theta_max", type=float, default=90.0)
 
-    ap.add_argument("--model", default="sin", choices=["sin", "linear"])
+    ap.add_argument("--model", default="sin", choices=["sin", "linear", "exp", "expk"])
     ap.add_argument("--gamma", type=float, default=1.0)
 
     ap.add_argument("--tol_q", type=float, default=3e-3)
+    ap.add_argument("--eps_under_rel", type=float, default=5e-3)
     ap.add_argument("--max_iters", type=int, default=60)
     ap.add_argument("--alpha", type=float, default=0.7)
     ap.add_argument("--H0_gain", type=float, default=1.0)
@@ -84,6 +85,7 @@ def main() -> None:
         model=args.model,
         gamma=args.gamma,
         tol_q=args.tol_q,
+        eps_under_rel=args.eps_under_rel,
         max_iters=args.max_iters,
         alpha=args.alpha,
         H0_gain=args.H0_gain,

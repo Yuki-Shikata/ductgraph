@@ -62,12 +62,13 @@ def main() -> None:
     ap.add_argument("--theta_center", type=float, default=75.0)
     ap.add_argument("--theta_band", type=float, default=10.0)
 
-    ap.add_argument("--model", default="sin", choices=["sin", "linear"])
+    ap.add_argument("--model", default="sin", choices=["sin", "linear", "exp", "expk"])
     ap.add_argument("--gamma", type=float, default=1.0)
 
     ap.add_argument("--s_min", type=float, default=0.2)
     ap.add_argument("--s_max", type=float, default=3.0)
     ap.add_argument("--tol_q", type=float, default=3e-3)
+    ap.add_argument("--eps_under_rel", type=float, default=2e-4)
 
     ap.add_argument("--fan_q_init", type=float, default=2.0)
     ap.add_argument("--fan_q_cap", type=float, default=80.0)
@@ -108,6 +109,7 @@ def main() -> None:
         s_min=args.s_min,
         s_max=args.s_max,
         tol_q=args.tol_q,
+        eps_under_rel=args.eps_under_rel,
         fan_q_init=args.fan_q_init,
         fan_q_cap=args.fan_q_cap,
     )
