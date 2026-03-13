@@ -238,3 +238,32 @@ def test_overshoot_is_warning_not_fail_if_no_undershoot():
         any_over = any((q > (q_design[eid] + 3e-3)) for eid, q in c.achieved_q_abs.items())
         if any_over:
             assert "WARN overshoot" in c.msg
+
+def test_full_load_index_selection_is_seed_independent():
+    net, fixed_p, full_active, q_design = _make_simple_3term_net(r_hard_extra=20.0)
+    cases = [("full", [1, 2, 3])]
+
+    results = []
+    for seed in (1, 2, 3):
+        out = commission_and_scale(
+            net,
+            fan_edge_ids=[0],
+            maxload_edge_id=seed,
+            full_active_cav_edge_ids=full_active,
+            q_design_by_edge=q_design,
+            scaling_cases=cases,
+            fixed_p=fixed_p,
+            d={},
+            model="sin",
+            gamma=1.0,
+            tol_q=3e-3,
+            fan_q_init=2.0,
+            fan_q_cap=80.0,
+        )
+        results.append((out.index_edge_id, out.speed_full))
+
+    idx0, s0 = results[0]
+    assert idx0 in full_active
+    for idx, s in results[1:]:
+        assert idx == idx0
+        assert abs(s - s0) < 1e-10

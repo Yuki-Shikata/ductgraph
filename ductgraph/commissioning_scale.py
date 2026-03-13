@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Iterable
 
 from ductgraph.model import Network
@@ -35,6 +35,19 @@ class CommissionScaleResult:
 
     # scaling cases
     cases: List[ScalingCaseResult]
+
+    # selected index terminal used for full-load speed tuning
+    index_edge_id: Optional[int] = None
+
+    # strict commissioning status for full-load target opening band
+    full_load_band_ok: bool = True
+    full_load_index_theta: Optional[float] = None
+
+    # full-load diagnostics
+    full_load_diag: str = "ok"
+    full_load_diag_msg: str = ""
+    full_load_critical_edges: List[int] = field(default_factory=list)
+    full_load_critical_thetas: List[float] = field(default_factory=list)
 
 
 def _absq(res: SolveResult, edge_id: int) -> float:
@@ -147,7 +160,7 @@ def commission_and_scale(
     commissioning + scaling (CAV再現版)
 
     方針：
-      A) 全台運転：maxload を基準に fan speed を決定
+      A) 全台運転：全端末同時成立 + 厳しい端末群の開度帯で fan speed を決定
       B) 部分運転：
          - speed は設計風量比でスケール
          - CAV は「一致（match）」まで追い込む
@@ -161,31 +174,193 @@ def commission_and_scale(
         d = {}
 
     # --- A) full-load speed tuning ---
-    q_design_maxload = float(q_design_by_edge[maxload_edge_id])
+    # Full-active solve first, then choose baseline speed from severe-terminal group.
+    full_edges = [int(eid) for eid in full_active_cav_edge_ids if eid in q_design_by_edge]
+    if not full_edges:
+        raise ValueError("no full-load active edges in q_design_by_edge")
 
-    best_s, (q65, q85, res_band) = tune_speed_for_maxload(
-        net,
-        fan_edge_ids=fan_edge_ids,
-        maxload_edge_id=maxload_edge_id,
-        q_design=q_design_maxload,
-        theta_center=theta_center,
-        theta_band=theta_band,
-        fixed_p=fixed_p,
-        d=d,
-        model=model,
-        gamma=gamma,
-        s_min=s_min,
-        s_max=s_max,
-        tol_q=tol_q,
-        fan_q_init=fan_q_init,
-        fan_q_cap=fan_q_cap,
+    full_targets = {eid: float(q_design_by_edge[eid]) for eid in full_edges}
+    q_min_req_full = {eid: full_targets[eid] * (1.0 - eps_under_rel) for eid in full_edges}
+    critical_n = max(1, min(2, len(full_edges)))
+    band_lo = float(theta_center) - float(theta_band)
+    band_hi = float(theta_center) + float(theta_band)
+
+    def _solve_full_active_at_speed(speed_ratio: float) -> CavSolveResult:
+        return solve_cav_at_speed(
+            net,
+            speed_ratio=float(speed_ratio),
+            fan_edge_ids=fan_edge_ids,
+            active_cav_edge_ids=list(full_edges),
+            targets_q=full_targets,
+            closed_cav_edge_ids=None,
+            fixed_p=fixed_p,
+            d=d,
+            model=model,
+            gamma=gamma,
+            tol_q=tol_q,
+            max_iters=cav_max_iters,
+            alpha=cav_alpha,
+            H0_gain=cav_H0_gain,
+            fan_q_init=fan_q_init,
+            fan_q_cap=fan_q_cap,
+        )
+
+    n_grid = 25
+    # sample tuple:
+    # (speed, in_band(topN), distance_to_band, top_pairs[(eid,theta)], cav_result)
+    samples_ok: List[Tuple[float, bool, float, List[Tuple[int, float]], CavSolveResult]] = []
+    last_cav: Optional[CavSolveResult] = None
+    any_capacity_shortage = False
+    any_solver_unstable = False
+
+    for i in range(n_grid + 1):
+        s_i = float(s_min) + (float(s_max) - float(s_min)) * (float(i) / float(n_grid))
+        cav_i = _solve_full_active_at_speed(s_i)
+        last_cav = cav_i
+
+        if cav_i.res.converged and cav_i.ok and cav_i.thetas:
+            theta_pairs: List[Tuple[int, float]] = []
+            for eid in full_edges:
+                if eid not in cav_i.thetas:
+                    theta_pairs = []
+                    break
+                th = float(cav_i.thetas[eid])
+                if th != th:
+                    theta_pairs = []
+                    break
+                theta_pairs.append((int(eid), th))
+            if theta_pairs:
+                theta_pairs.sort(key=lambda x: x[1], reverse=True)
+                top_pairs = theta_pairs[:critical_n]
+                top_thetas = [th for _, th in top_pairs]
+                in_band = all((band_lo <= th <= band_hi) for th in top_thetas)
+                if in_band:
+                    dist = 0.0
+                elif max(top_thetas) < band_lo:
+                    dist = float(band_lo - max(top_thetas))
+                elif min(top_thetas) > band_hi:
+                    dist = float(min(top_thetas) - band_hi)
+                else:
+                    # straddle band edge, use distance of top-group mean to center
+                    m = sum(top_thetas) / float(len(top_thetas))
+                    dist = float(abs(m - float(theta_center)))
+                samples_ok.append((float(s_i), bool(in_band), float(dist), top_pairs, cav_i))
+                continue
+
+        # non-feasible sample: classify shortage vs unstable
+        try:
+            q_fo = eval_fullopen_flows(
+                net,
+                speed_ratio=float(s_i),
+                fan_edge_ids=fan_edge_ids,
+                cav_edge_ids=full_edges,
+                fixed_p=fixed_p,
+                d=d,
+                model=model,
+                gamma=gamma,
+                fan_q_init=fan_q_init,
+                fan_q_cap=fan_q_cap,
+            )
+            unders_fo = [eid for eid in full_edges if float(q_fo[eid]) < q_min_req_full[eid]]
+            if unders_fo:
+                any_capacity_shortage = True
+            else:
+                any_solver_unstable = True
+        except RuntimeError:
+            any_solver_unstable = True
+
+    full_load_diag = "ok"
+    full_load_diag_msg = ""
+    full_load_critical_edges: List[int] = []
+    full_load_critical_thetas: List[float] = []
+
+    if samples_ok:
+        in_band_samples = [s for s in samples_ok if s[1]]
+        if in_band_samples:
+            # Prefer minimum required speed among in-band candidates.
+            chosen = min(in_band_samples, key=lambda x: float(x[0]))
+            full_load_diag = "ok"
+        else:
+            # No in-band point: prefer minimum feasible speed among full-active successful solves.
+            chosen = min(samples_ok, key=lambda x: float(x[0]))
+            top_thetas = [th for _, th in chosen[3]]
+            if max(top_thetas) < band_lo:
+                full_load_diag = "over_static"
+                full_load_diag_msg = "severe terminals are too closed (high static side)"
+            elif min(top_thetas) > band_hi:
+                full_load_diag = "under_static"
+                full_load_diag_msg = "severe terminals are too open (low static side)"
+            else:
+                m = sum(top_thetas) / float(len(top_thetas))
+                full_load_diag = "over_static" if m < float(theta_center) else "under_static"
+                full_load_diag_msg = "severe terminals do not fit target band"
+
+        best_s = float(chosen[0])
+        top_pairs = list(chosen[3])
+        cav_best = chosen[4]
+        res_band = cav_best.res
+        _index_edge = int(top_pairs[0][0])
+        _theta_idx = float(top_pairs[0][1])
+        full_load_critical_edges = [int(eid) for eid, _ in top_pairs]
+        full_load_critical_thetas = [float(th) for _, th in top_pairs]
+
+        q65 = float("nan")
+        q85 = float("nan")
+        if _index_edge in q_design_by_edge:
+            _, (q65, q85, _) = tune_speed_for_maxload(
+                net,
+                fan_edge_ids=fan_edge_ids,
+                maxload_edge_id=int(_index_edge),
+                q_design=float(q_design_by_edge[_index_edge]),
+                theta_center=theta_center,
+                theta_band=theta_band,
+                fixed_p=fixed_p,
+                d=d,
+                model=model,
+                gamma=gamma,
+                s_min=float(best_s),
+                s_max=float(best_s),
+                tol_q=tol_q,
+                fan_q_init=fan_q_init,
+                fan_q_cap=fan_q_cap,
+            )
+    else:
+        assert last_cav is not None
+        best_s = float(s_max)
+        res_band = last_cav.res
+        q65 = float("nan")
+        q85 = float("nan")
+        _index_edge = int(maxload_edge_id if maxload_edge_id in full_edges else full_edges[0])
+        _theta_idx = float("nan")
+        if any_capacity_shortage:
+            full_load_diag = "capacity_shortage"
+            full_load_diag_msg = "design flow cannot be met even at full-open on scanned speeds"
+        else:
+            full_load_diag = "solver_unstable"
+            full_load_diag_msg = "full-load CAV simultaneous solve is unstable/non-convergent"
+
+    full_load_band_ok = (
+        bool(full_load_critical_thetas)
+        and all((band_lo <= float(th) <= band_hi) for th in full_load_critical_thetas)
     )
 
     if not res_band.converged:
-        return CommissionScaleResult(float(best_s), float(q65), float(q85), res_band, cases=[])
+        return CommissionScaleResult(
+            float(best_s),
+            float(q65),
+            float(q85),
+            res_band,
+            cases=[],
+            index_edge_id=int(_index_edge),
+            full_load_band_ok=bool(full_load_band_ok),
+            full_load_index_theta=float(_theta_idx) if (_theta_idx == _theta_idx) else None,
+            full_load_diag=str(full_load_diag),
+            full_load_diag_msg=str(full_load_diag_msg),
+            full_load_critical_edges=list(full_load_critical_edges),
+            full_load_critical_thetas=list(full_load_critical_thetas),
+        )
 
     qsum_full = sum(float(q_design_by_edge[eid]) for eid in full_active_cav_edge_ids)
-
     cases_out: List[ScalingCaseResult] = []
 
     # --- B) scaling cases ---
@@ -326,4 +501,17 @@ def commission_and_scale(
             )
         )
 
-    return CommissionScaleResult(float(best_s), float(q65), float(q85), res_band, cases=cases_out)
+    return CommissionScaleResult(
+        float(best_s),
+        float(q65),
+        float(q85),
+        res_band,
+        cases=cases_out,
+        index_edge_id=int(_index_edge),
+        full_load_band_ok=bool(full_load_band_ok),
+        full_load_index_theta=float(_theta_idx) if (_theta_idx == _theta_idx) else None,
+        full_load_diag=str(full_load_diag),
+        full_load_diag_msg=str(full_load_diag_msg),
+        full_load_critical_edges=list(full_load_critical_edges),
+        full_load_critical_thetas=list(full_load_critical_thetas),
+    )

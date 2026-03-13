@@ -58,6 +58,8 @@ from cases.real_case import (
     EDGE_C,
     EDGE_D,
     choose_maxload_edge,
+    EPS_UNDER_REL_DEFAULT,
+    TOL_WARN_REL_DEFAULT,
 )
 
 
@@ -110,13 +112,13 @@ def main() -> int:
     ap.add_argument("--model", default="sin", help="damper model: sin|linear|exp|expk")
     ap.add_argument("--gamma", type=float, default=1.0, help="gamma (sin/linear exponent or exp/expk strength)")
     ap.add_argument("--tol-q", type=float, default=3e-3, help="abs tolerance for |Q|-Qdes match")
-    ap.add_argument("--eps-under-rel", type=float, default=1e-4, help="tiny numeric absorb for acceptance (not a display tolerance)")
-    ap.add_argument("--tol-warn-rel", type=float, default=0.03, help="display tolerance: WARN if Q/Qdes < 1, UNDER if Q/Qdes < 1-tol")
+    ap.add_argument("--eps-under-rel", type=float, default=float(EPS_UNDER_REL_DEFAULT), help="acceptance margin (equipment tolerance), e.g. 0.01=1%")
+    ap.add_argument("--tol-warn-rel", type=float, default=float(TOL_WARN_REL_DEFAULT), help="display threshold: UNDER if Q/Qdes < 1-tol_warn_rel")
     ap.add_argument("--fan-q-init", type=float, default=2.0)
     ap.add_argument("--fan-q-cap", type=float, default=80.0)
 
     # --- power curve (base speed) ---
-    # ここはあなたの画像の a,b,c,d に合わせて変えてOK（CLIでも上書き可能）
+    # set shaft power polynomial coefficients directly here if needed
     ap.add_argument("--pw-a", type=float, default=-0.000004, help="shaft power poly a (Q^3), Q in cmm")
     ap.add_argument("--pw-b", type=float, default=0.0007, help="shaft power poly b (Q^2), Q in cmm")
     ap.add_argument("--pw-c", type=float, default=-0.008, help="shaft power poly c (Q), Q in cmm")
@@ -201,6 +203,13 @@ def main() -> int:
         " q65:", out.q65,
         " q85:", out.q85,
         " converged_full:", out.res_full.converged,
+        " index_edge_id:", out.index_edge_id,
+        " full_load_band_ok:", out.full_load_band_ok,
+        " full_load_index_theta:", out.full_load_index_theta,
+        " full_load_diag:", out.full_load_diag,
+        " full_load_critical_edges:", out.full_load_critical_edges,
+        " full_load_critical_thetas:", out.full_load_critical_thetas,
+        " full_load_diag_msg:", out.full_load_diag_msg,
     )
 
     if not out.cases:
@@ -318,7 +327,7 @@ def main() -> int:
 
             is_off = eid not in a
             if is_off:
-                th = 1.0  # theta_off 表示（見やすさ優先）
+                th = 1.0  # theta_off display
                 flag = "OFF"
             else:
                 th = float(getattr(cc, "thetas", {}).get(eid, float("nan")))
@@ -349,3 +358,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
