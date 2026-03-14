@@ -1,29 +1,36 @@
-# Real-Case Structure (Current)
+# Real-Case Structure (current)
 
-## Main execution path
-- `tools/run_realcase_commission_scale.py`: operator-facing runner
-- `ductgraph/commissioning_scale.py`: full-load commissioning + partial-load scaling logic
-- `cases/real_case.py`: compatibility facade for real-case setup
+## 1. 実行導線
+- tools/run_realcase_commission_scale.py
+- ductgraph/commissioning_scale.py
+- cases/real_case.py
 
-## Real-case case-definition split
-- `cases/real_case_constants.py`: IDs, fixed pressures, setpoints, physical constants, local-loss tables
-- `cases/real_case_defaults.py`: operation defaults (damper model/gamma, fan curve defaults, scaling cases, tolerances)
-- `cases/real_case_network.py`: resistance build-up, damper calibration, and `make_net()`
-- `cases/real_case.py`: stable API/re-exports (`Q_DESIGN`, `CAV_EDGES`, `make_net`, etc.)
+上記3つを runtime の主線とする。
 
-## Reporting utilities
-- `ductgraph/report_commission_scale.py`: summary/terminal table formatting and reason classification
+## 2. cases 分割
+- cases/real_case_constants.py
+  - edge/node ID
+  - 設計風量（cmh）
+  - 固定圧境界
+  - 物理定数、局部損失係数テーブル
+- cases/real_case_defaults.py
+  - モデル既定値（damper model/gamma, fan poly, Hz bounds, band, off-u）
+  - scaling cases
+- cases/real_case_network.py
+  - Q_DESIGN 生成
+  - 設計点ベースの r 計算
+  - damper 目標圧損から damper_k 逆算
+  - make_net()
+- cases/real_case.py
+  - 安定公開 API と再エクスポート
 
-## Archived comparison work
-- `archive/_cmp_d34/`
-- `archive/_cmp_d4/`
+## 3. レポート分離
+- ductgraph/report_commission_scale.py
 
-These are kept for historical comparison and are not part of the runtime path.
+計算結果の整形・表示をここに集約し、runner 側の責務を軽くしている。
 
+## 4. アーカイブ
+- archive/legacy_unused/: 旧 CLI/旧物理モジュール
+- archive/_cmp_d34/, archive/_cmp_d4/: 比較用ワーク
 
-## Archived legacy modules
-- `archive/legacy_unused/ductgraph/cli_cav.py`
-- `archive/legacy_unused/ductgraph/cli_commission_scale.py`
-- `archive/legacy_unused/ductgraph/physics/`
-
-These modules are not imported by `tools/run_realcase_commission_scale.py` and were moved out of the main runtime path.
+いずれも runtime path ではない。

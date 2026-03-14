@@ -1,16 +1,16 @@
 # Test Layout
 
-## Active tests (current runtime)
-- Path: `tests/nodehead/`
-- Scope: solver + commissioning_scale + realcase runtime path
-- Command (from repo root): `python -m pytest -q ductgraph_proj/tests/nodehead`
-- Command (from `ductgraph_proj/`): `python -m pytest -q tests/nodehead`
+## 1. Active tests
+- Path: tests/nodehead/
+- Scope: current runtime path (commissioning_scale, real_case, solver)
+- Command (repo root): python -m pytest -q ductgraph_proj/tests/nodehead
+- Command (ductgraph_proj/): python -m pytest -q tests/nodehead
 
-## Legacy tests (reference/compat)
-- Path: `tests/legacy_nodehead/`
-- Scope: legacy two-stage commissioning flow and seed(maxload)-based tuning path
-- Command: `python -m pytest -q tests/legacy_nodehead`
+## 2. Legacy tests
+- Path: tests/legacy_nodehead/
+- Scope: historical reference for old two-stage / maxload-seed flow
+- Command (ductgraph_proj/): python -m pytest -q tests/legacy_nodehead
 
-## Quick verify
-- Command: `make verify`
-- Location: run inside `ductgraph_proj/`
+## 3. Quick verify
+- ductgraph_proj/Makefile に verify ターゲットあり
+- 実行場所: ductgraph_proj/

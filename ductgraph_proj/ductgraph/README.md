@@ -1,239 +1,65 @@
-## このREADMEとSPECの役割
-
-- `README.md`: 使い方 / 入出力 / 運用上の注意（入口と実行手順）
-- `SPEC.md`: 数学モデル / 判定基準 / 変更ルール（仕様として固定するもの）
-- 旧資料は `_quarantine/docs_old/` に退避（参照のみ。正は README.md と SPEC.md）
-
-このディレクトリは、樹形（ループなし）ダクトネットワークの簡易モデルと、端末ダンパ＋ファン回転数で「設計風量を満たす」ための commissioning（試運転調整）ロジック、およびそのテストを含む。
-
----
-
-## 1) 単位と記号（言葉→変数）
-- 設計風量（design flow）: `q_design` [m^3/s]
-- 端末流量（terminal flow）: `Q_i` = `abs(res.q[edge_id])` [m^3/s]  
-  ※ solver の `res.q[...]` は符号付きなので、端末判定は絶対値 `abs()` を使う。
-- ダンパ開度（damper angle）: `theta` [deg]
-- ファン回転数比（speed ratio）: `s`（無次元、50Hz基準に対する比など）
-- maxload（最大負荷端末）: 「全端末の中で最も開度が大きい端末」。調整では `maxload_edge_id` として与える。
-
----
-
-## 2) 分岐（T字）仕様（確定）
-T字分岐は「直通(run)」と「分岐(branch)」を必ず持つ。
-
-共通定義:
-- run（直通）: 主流方向に対して反対側へ抜ける側
-- branch（分岐）: 主流方向に対して直角に出る側（合流側の直角側）
-
-今回の実案件の定義:
-- T1: run=b, branch=a
-- T2: run=d, branch=c
-
-損失係数は「方式T1」を採用し、流量比 r により run側K / branch側K を計算して、それぞれの側の圧損に加算する。
-
----
-
-## 3) ファン曲線
-ファン静圧（ΔP）は 3次多項式で与える（基準回転数・基準周波数）。
-- 形式: ΔP(Q) = a3*Q^3 + a2*Q^2 + a1*Q + a0
-- 単位はモデル側で統一する（テストは簡略モデルのため係数はダミーも含む）。
-- 周波数/回転数を上げると、同一系統抵抗に対して到達風量・静圧が増える。
-
----
-
-## 4) commissioning（commission_two_stage）の合否と “tol” の分離
-本プロジェクトでは「tol（許容差）」を用途別に分離する。
-
-### 4.1 合否（Pass/Fail）
-最終解で **全端末が設計風量を下回らない**こと（不足NG）。
-- 合否条件（数値誤差吸収込み）:
-  Q_i >= q_design * (1 - eps_under_rel)
-
-ここで `eps_under_rel` は **数値計算の丸め誤差・微小誤差の吸収**のための相対値。
-設備としての「不足NG」を崩さない範囲で極小にする。
-
-### 4.2 収束（convergence）＝反復調整が「もう十分」と判断して止める目安
-commissioning は、ファン回転数調整＋ダンパ調整を反復する。
-この「反復調整が落ち着いた」判定に使うのが `tol_conv_rel` であり、
-**合否判定とは別**である。
-
-### 4.3 警告（warning）
-`tol_warn_rel` などは、過大風量・authority不足などの「警告」目安として使う。
-合否には使わない。
-
-### 4.4 旧 `tol_q`
-既存コード互換のため `tol_q` が残っている場合は、
-「警告目安」「速度チューナ内部の目安」用途に限定する（合否には使わない）。
-
----
-
-## 5) テスト方針（nodehead）
-`tests/nodehead/` は commissioning の意図を固定するための回帰テスト。
-
-代表例:
-- `test_commission_two_stage_*`:
-  maxload=75deg を固定し、他端末を絞って設計風量を満たすことを確認する。
-- `test_commission_tree5_*`:
-  5端末ツリー構造で、相互干渉があっても反復で合格することを確認する。
-- `test_commission_tree5_insufficient_*`:
-  ファン能力が足りない条件では commissioning が NG（out.ok==False）を返し、
-  かつ speed_ratio が上限（S_MAX）に張り付くことを確認する。
-
----
-
-## 6) 実案件ネットワークへ進むための方針
-- 単位を統一（m^3/s ベース）し、YAMLで実ダクト（直管・局部・分岐K）を定義する。
-- 端末設計風量は将来「端末ごとに別値」を許容する設計にする。
-- 分岐（T字）の run/branch 定義は本READMEの通りに固定する。
-
-
-# ductgraph
-
-ductgraph は、ダクトネットワーク・ファン・端末（オリフィス＋ダンパ）からなる
-**局所排気／空調系の定常流量分布と commissioning（試運転調整）**を
-数値的に再現・検証するための Python モジュールです。
-
-本プロジェクトでは **「数値計算の収束」と「設備としての合否」**を明確に分離して扱います。
-
----
-
-## 1. 目的とスコープ
-
-- ダクト網＋ファン性能曲線＋端末抵抗から流量分布を解く
-- 試運転時に行う
-  - ファン回転数調整
-  - 端末ダンパ調整
-  を **アルゴリズムとして再現**
-- 「全端末が設計風量を満たすか」という **設備的な合否判定**を行う
-
-❌ 目的ではないこと  
-- 実機の fan curve fitting
-- 実在メーカー性能表の再現精度追求
-- 動的制御（PID 等）
-
----
-
-## 2. Commissioning の基本仕様（重要）
-
-### 2.1 合否の定義（最重要ルール）
-
-**最終解において、すべての端末が以下を満たすことが合格条件です。**
-
-Q_i ≥ Q_design,i   （全端末）
-
-- 判定は **下側のみ（不足 NG）**
-- ±許容や平均評価は行わない
-- 「わずかに不足」は **数値誤差としてのみ吸収**する
-
----
-
-### 2.2 tolerance（許容値）の役割分離
-
-本プロジェクトでは、用途の異なる tolerance を明確に分けます。
-
-#### (A) eps_under_rel（合否用・数値誤差吸収）
-- 目的：丸め誤差・反復誤差による微小不足を誤判定しない
-- 使い方：Q_i ≥ Q_design * (1 - eps_under_rel)
-
-- **極小値（例：1e-4〜1e-3）**
-- 合否判定にのみ使用
-
-#### (B) tol_conv_rel（収束判定用）
-- 目的：ダンパ調整・反復計算を「十分寄せた」と判断して止める
-- 合否には一切使わない
-- 例：Q_i ≤ Q_design * (1 + tol_conv_rel)
-
-#### (C) tol_q（警告・目安用）
-- legacy 引数
-- 過大風量や authority 確認の **警告用途のみ**
-- 合否判定に使うことは禁止
-
----
-
-## 3. commission_two_stage の考え方
-
-### 3.1 二段階調整
-
-1. **Stage 1：ファン回転数調整**
- - maxload 端末（最も不利な端末）を基準に回転数を探索
- - ダンパは仮固定状態
-2. **Stage 2：他端末ダンパ調整**
- - Gauss-Seidel 的に各端末ダンパを調整
- - 相互干渉があるため複数ラウンド実行
-
----
-
-### 3.2 不足ファン（到達不能）の扱い
-
-- fan speed が **上限 s_max に張り付いても**
-- Q_maxload < Q_design
-
-の場合：
-
-➡ **物理的に到達不能**と判断し commissioning は **NG**
-
-- これはバグではなく **正しい設備的判断**
-- ダンパ調整で解決すべき問題ではない
-
----
-
-## 4. テスト設計の考え方
-
-### 4.1 テストは「仕様のコード化」
-
-本プロジェクトのテストは、
-**数値を当てるためのテストではなく、設計思想を固定するためのテスト**です。
-
----
-
-### 4.2 主なテスト分類
-
-#### (1) 正常系（到達可能）
-
-- fan curve が十分
-- commissioning により：
-- 全端末 Q ≥ Q_design
-- maxload は指定角度帯（例：75°±band）に収まる
-- `out.ok == True`
-
-#### (2) 異常系（ファン能力不足）
-
-- fan curve を **意図的に極端に弱く**設定
-- 目的：
-- 「回転数を上げれば何でも解決する」という誤った挙動を防ぐ
-- 確認内容：
-- `out.ok == False`
-- `speed_ratio == s_max`（上限張り付き）
-- **到達不能であることが理由で NG**
-
-※ fan curve の数値自体に物理的意味はない  
-※ テストごとに fan curve を変えるのは **意図的**
-
----
-
-## 5. 重要な思想（まとめ）
-
-- 数値収束 ≠ 設備合格
-- tol は **用途別に分ける**
-- commissioning は
-- 「ダンパをいじれば何とかなる」世界ではない
-- テストは
-- fan 性能を探すゲームではなく
-- **設計思想を壊さないための安全装置**
-
----
-
-## 6. 想定読者
-
-- 局所排気・空調設備の設計者
-- 試運転・性能確認を論理的に整理したい技術者
-- ダクト網解析を自作・拡張したいエンジニア
-
-##テストについて
-
-This package contains airflow network models and commissioning utilities
-for duct systems with fans, dampers, and terminals.
-
-## Commissioning: pass/fail semantics (insufficient fan)
-
-`commission_two_stage` の合否判定は「全端末が設計風量を下回らないこと」を唯一の基準とする。すなわち最終解において各端末流量 Q は Q ≥ Q_design を満たす必要があり、不足は NG（Fail）である。数値計算に伴う丸め誤差については極小の相対誤差（eps_under_rel）のみ吸収し、それ以外の許容幅は設けない。`tol_q`（例: 3%）は合否には用いず、調整アルゴリズムの収束目安や警告判定のための指標としてのみ使用する。ファン能力が不足している場合、commissioning は回転数を上限（s_max）まで引き上げても設計風量に到達できず、`out.ok=False` を返す。このとき speed_ratio が上限に張り付くことが「物理的に到達不能」であることの根拠となる。テストにおいては、ファン性能曲線を十分に弱く設定することで、この到達不能ケースを明確に検証する。
+# ductgraph (runtime README)
+
+この README は ductgraph_proj/ の現行 runtime を運用するための正本です。
+
+## 1. 目的
+- 樹形ダクトネットワーク（ループなし）の定常計算
+- CAV 端末同時解による full-load commissioning（基準周波数決定）
+- 部分負荷の速度スケーリングと不足判定
+
+## 2. 正式な実行入口
+- tools/run_realcase_commission_scale.py
+
+実行（repo root）:
+./.venv/bin/python ductgraph_proj/tools/run_realcase_commission_scale.py
+
+実行（ductgraph_proj/ 内）:
+cd ductgraph_proj
+../.venv/bin/python tools/run_realcase_commission_scale.py
+
+## 3. 現行アルゴリズム要点
+
+### 3.1 full-load
+- active CAV 全数を同時に解く（単一端末固定方式ではない）
+- 候補 speed ごとに成立性を評価
+  - solver 収束
+  - 全端末 Q >= Qdes * (1 - eps_under_rel)
+- 上位 1〜2 本の厳しい端末開度が目標帯に入る最小 speed を採用
+- 帯内候補がなければ best-fit 候補を採用し、診断を返す
+
+診断コード:
+- ok
+- under_static
+- over_static
+- capacity_shortage
+- solver_unstable
+
+### 3.2 partial-load
+- 初期速度 s = s_full * (ΣQdes_active / ΣQdes_full)
+- s_min..s_max でクランプ
+- active CAV を同時解
+- OFF 端末は既定で off_damper_u=1e-3（必要なら theta_off 指定に切替可）
+- 不足/未収束時は full-open チェックで能力不足を追加診断
+
+## 4. real_case 既定値
+- damper model: expk
+- gamma: 3.0
+- base Hz: 50.0
+- Hz 範囲: 25.0..80.0
+- full-load 目標帯: 75.0 ± 7.5 deg
+- eps_under_rel=0.01, tol_warn_rel=0.03
+
+定義元: cases/real_case_defaults.py
+
+## 5. 主要ファイル
+- cases/real_case.py: real case 公開 API（互換 facade）
+- cases/real_case_network.py: r / damper_k / fan curve を含むネットワーク生成
+- ductgraph/commissioning_scale.py: commissioning 本体
+- ductgraph/report_commission_scale.py: レポート整形
+
+## 6. 非対象
+- 時系列制御（PID）
+- 温度/密度の動的変化
+- 実機固有の詳細弁特性の忠実再現
+
+詳細仕様は docs/commissioning_spec.md を参照。
