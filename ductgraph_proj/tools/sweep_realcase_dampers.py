@@ -15,6 +15,7 @@ from ductgraph.control_damper import with_damper_angle
 from ductgraph.solver_nodehead import solve_node_head
 from cases.real_case import (
     make_net, FIXED_P, Q_DESIGN, CAV_EDGES, EDGE_LABELS,
+    REALCASE_DAMPER_MODEL_DEFAULT, REALCASE_DAMPER_GAMMA_DEFAULT,
 )
 
 @dataclass
@@ -36,20 +37,20 @@ def run_case(net, fixed_p, model: str, gamma: float, thetas: Dict[int, float], f
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="expk", help="sin|linear|exp|expk")
-    ap.add_argument("--gamma", type=float, default=5.0)
+    ap.add_argument("--model", default=str(REALCASE_DAMPER_MODEL_DEFAULT), help="sin|linear|exp|expk")
+    ap.add_argument("--gamma", type=float, default=float(REALCASE_DAMPER_GAMMA_DEFAULT))
     ap.add_argument("--fan-q-init", type=float, default=2.0)
     ap.add_argument("--fan-q-cap", type=float, default=80.0)
     ap.add_argument("--eps-under-rel", type=float, default=1e-4)
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    net = make_net()
+    net = make_net(damper_model=str(args.model), damper_gamma=float(args.gamma))
     fixed_p = dict(FIXED_P)
     qdes = dict(Q_DESIGN)
     eps_under_rel = float(args.eps_under_rel)
 
-    # --- 1) 単調性チェック用：各端末を単独で 0->90 を掃引（他は90固定） ---
+    # --- 1) Monotonicity check: sweep each terminal from 0->90 deg (others fixed at 90) ---
     sweep_angles = [0.0, 10.0, 20.0, 30.0, 45.0, 60.0, 75.0, 85.0, 90.0]
 
     rows: List[Row] = []
@@ -62,7 +63,7 @@ def main() -> int:
             conv, qabs = run_case(net, fixed_p, args.model, args.gamma, thetas, args.fan_q_init, args.fan_q_cap)
             rows.append(Row(name=f"sweep_{eid}_{th:g}", thetas=thetas, converged=conv, qabs=qabs))
 
-    # --- 2) Authority/Capacity 判定用：端末ごとに (0°) と (90°) だけ確認（他は90固定） ---
+    # --- 2) Authority/Capacity check: evaluate only 0 deg and 90 deg (others fixed at 90) ---
     diag = {}
     for eid in CAV_EDGES:
         base = {e: 90.0 for e in CAV_EDGES}
@@ -76,7 +77,7 @@ def main() -> int:
 
         diag[eid] = (conv_o, q_o[eid], conv_c, q_c[eid])
 
-    # ===== 出力 =====
+    # ===== Output =====
     print("=== sweep_realcase_dampers ===")
     print(f"model={args.model} gamma={args.gamma} fan_q_init={args.fan_q_init} fan_q_cap={args.fan_q_cap}")
     print("Design Q (m3/s):")
@@ -103,8 +104,8 @@ def main() -> int:
 
     print("\n--- [B] Authority / Capacity diagnosis (others 90deg) ---")
     print("Interpretation:")
-    print("  - authority 부족: theta=0°でも Q > Qdes+tol (絞り切っても過大)")
-    print("  - capacity 不足 : theta=90°でも Q < Qdes*(1-eps_under_rel) (全開でも不足)")
+    print("  - authority: theta=0deg still gives Q > Qdes+tol (cannot throttle enough)")
+    print("  - capacity : theta=90deg gives Q < Qdes*(1-eps_under_rel) (insufficient even fully open)")
     tol = 3e-3  # same as your commissioning default; used only for this diagnosis
     for eid in CAV_EDGES:
         conv_o, q_open, conv_c, q_close = diag[eid]

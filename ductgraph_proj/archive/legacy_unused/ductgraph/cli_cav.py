@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 from typing import Dict, List
 
 from ductgraph.control_cav import solve_cav_dampers_broyden
@@ -23,6 +24,21 @@ def _parse_targets(s: str) -> Dict[int, float]:
         k, v = part.split(":")
         out[int(k.strip())] = float(v.strip())
     return out
+
+
+
+def _build_net_from_factory(factory, *, model: str, gamma: float):
+    try:
+        sig = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return factory()
+
+    kwargs = {}
+    if "damper_model" in sig.parameters:
+        kwargs["damper_model"] = str(model)
+    if "damper_gamma" in sig.parameters:
+        kwargs["damper_gamma"] = float(gamma)
+    return factory(**kwargs)
 
 
 def main() -> None:
@@ -60,7 +76,7 @@ def main() -> None:
     mod = importlib.import_module(mod_name)
     make_net = getattr(mod, func_name)
 
-    net = make_net()
+    net = _build_net_from_factory(make_net, model=str(args.model), gamma=float(args.gamma))
 
     fixed_p = None
     if args.fixed_p.strip():

@@ -1,47 +1,54 @@
-# cases/real_case.py
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
-from ductgraph.model import Network, Node, Edge
+from ductgraph.control_damper import angle_to_u
 from ductgraph.ductloss import (
-    Straight,
     LocalK,
-    r_from_segments_design_point,
+    Straight,
     r_from_const_dp_at_design,
+    r_from_segments_design_point,
     tee_K_from_ratio,
 )
+from ductgraph.model import Edge, Network, Node
 
-# IDs
-EDGE_FAN = 0
-EDGE_TRUNK_T1 = 1
-EDGE_TRUNK_T2 = 2
-EDGE_A = 11
-EDGE_C = 13
-EDGE_D = 14
+from .real_case_constants import (
+    AIR_NU,
+    AIR_RHO,
+    CAV_EDGES,
+    DAMPER_TARGET_DP_PA,
+    DAMPER_TARGET_THETA_DEG,
+    DEVICE_DP_DESIGN,
+    DUCT_ROUGHNESS_M,
+    D_BRANCH,
+    D_TRUNK,
+    EDGE_A,
+    EDGE_C,
+    EDGE_D,
+    EDGE_FAN,
+    EDGE_TRUNK_T1,
+    EDGE_TRUNK_T2,
+    FIXED_P,
+    K_BEND_90,
+    K_REDUCER,
+    NODE_AMB,
+    NODE_FAN_OUT,
+    NODE_ROOM_A,
+    NODE_ROOM_C,
+    NODE_ROOM_D,
+    NODE_T1,
+    NODE_T2,
+    SETPOINTS_CMH,
+    TEE_K_BRANCH_TABLE,
+    TEE_K_STRAIGHT_TABLE,
+)
 
-FAN_EDGE_IDS = [EDGE_FAN]
 
-EDGE_LABELS: Dict[int, str] = {
-    EDGE_FAN: "fan",
-    EDGE_TRUNK_T1: "trunk_T1",
-    EDGE_TRUNK_T2: "trunk_T2",
-    EDGE_A: "a",
-    EDGE_C: "c",
-    EDGE_D: "d",
-}
-
-SETPOINTS_CMH: Dict[str, float] = {
-    "a": 690.0,
-    "c": 990.0,
-    "d": 990.0,
-}
-
-# Real-case tolerance defaults (equipment/operation side):
-# - eps_under_rel: acceptance margin used by commissioning logic
-# - tol_warn_rel: display threshold for WARN/UNDER split
-EPS_UNDER_REL_DEFAULT = 0.01
-TOL_WARN_REL_DEFAULT = 0.03
+from .real_case_defaults import (
+    REALCASE_DAMPER_GAMMA_DEFAULT,
+    REALCASE_DAMPER_MODEL_DEFAULT,
+    REALCASE_FAN_POLY_DEFAULT,
+)
 
 
 def cmh_to_m3s(q_cmh: float) -> float:
@@ -54,84 +61,6 @@ def build_q_design() -> Dict[int, float]:
         EDGE_C: cmh_to_m3s(SETPOINTS_CMH["c"]),
         EDGE_D: cmh_to_m3s(SETPOINTS_CMH["d"]),
     }
-
-
-CAV_EDGES = [EDGE_A, EDGE_C, EDGE_D]
-Q_DESIGN = build_q_design()
-
-
-def choose_maxload_edge(q_design_by_edge: Dict[int, float], r_by_edge: Dict[int, float]) -> int:
-    best_eid = None
-    best_dp = None
-    for eid, q in q_design_by_edge.items():
-        r = float(r_by_edge.get(eid, 0.0))
-        dp = r * (q ** 2)
-        if best_dp is None or dp > best_dp:
-            best_dp = dp
-            best_eid = eid
-    assert best_eid is not None
-    return int(best_eid)
-
-
-ROOM_A_P = 0.0
-ROOM_CD_P = 0.0
-
-NODE_AMB = 0
-NODE_FAN_OUT = 1
-NODE_T1 = 2
-NODE_T2 = 3
-NODE_ROOM_A = 101
-NODE_ROOM_C = 103
-NODE_ROOM_D = 104
-
-FIXED_P: Dict[int, float] = {
-    NODE_AMB: 0.0,
-    NODE_ROOM_A: ROOM_A_P,
-    NODE_ROOM_C: ROOM_CD_P,
-    NODE_ROOM_D: ROOM_CD_P,
-}
-
-# --- physical constants / assumptions for design-point equivalent resistance ---
-AIR_RHO = 1.2
-AIR_NU = 1.5e-5
-DUCT_ROUGHNESS_M = 0.00015
-
-D_TRUNK = 0.35
-D_BRANCH = 0.25
-
-K_BEND_90 = 0.25
-K_REDUCER = 0.20
-
-# Damper practical tuning target:
-# at design flow, each terminal should consume a meaningful static pressure
-# at a realistic commissioning angle band center.
-DAMPER_TARGET_THETA_DEG = 75.0
-DAMPER_TARGET_DP_PA = {
-    EDGE_A: 300.0,
-    EDGE_C: 140.0,
-    EDGE_D: 140.0,
-}
-
-# terminal device dp at design [Pa]
-# c,d hood dp=69Pa from practical sheet; a has no hood here
-DEVICE_DP_DESIGN: Dict[int, float] = {
-    EDGE_A: 0.0,
-    EDGE_C: 69.0,
-    EDGE_D: 69.0,
-}
-
-# Tee K tables (design-flow-ratio interpolation)
-# These are fixed design-point surrogates for current solver (no per-iteration K update).
-TEE_K_BRANCH_TABLE = [
-    # practical diverging-tee branch K (order): ~0.55-1.0 around design range
-    (0.0, 0.95), (0.1, 0.90), (0.2, 0.85), (0.3, 0.80), (0.4, 0.75),
-    (0.5, 0.70), (0.6, 0.67), (0.7, 0.64), (0.8, 0.61), (0.9, 0.58), (1.0, 0.55),
-]
-TEE_K_STRAIGHT_TABLE = [
-    # practical tee-through K at comparable velocity level: ~0.06-0.30
-    (0.0, 0.06), (0.1, 0.08), (0.2, 0.10), (0.3, 0.12), (0.4, 0.14),
-    (0.5, 0.16), (0.6, 0.18), (0.7, 0.21), (0.8, 0.24), (0.9, 0.27), (1.0, 0.30),
-]
 
 
 def _r_duct(*, q_design: float, straight_runs: List[Straight], locals_k: List[LocalK]) -> float:
@@ -148,10 +77,10 @@ def _r_duct(*, q_design: float, straight_runs: List[Straight], locals_k: List[Lo
     )
 
 
-def _compute_edge_r() -> Dict[int, float]:
-    q_a = float(Q_DESIGN[EDGE_A])
-    q_c = float(Q_DESIGN[EDGE_C])
-    q_d = float(Q_DESIGN[EDGE_D])
+def _compute_edge_r(q_design_by_edge: Dict[int, float]) -> Dict[int, float]:
+    q_a = float(q_design_by_edge[EDGE_A])
+    q_c = float(q_design_by_edge[EDGE_C])
+    q_d = float(q_design_by_edge[EDGE_D])
     q_t2 = q_c + q_d
     q_t1 = q_a + q_t2
 
@@ -244,33 +173,48 @@ def _compute_edge_r() -> Dict[int, float]:
     }
 
 
-def _compute_damper_k() -> Dict[int, float]:
+def _compute_damper_k(
+    q_design_by_edge: Dict[int, float],
+    *,
+    damper_model: str = REALCASE_DAMPER_MODEL_DEFAULT,
+    damper_gamma: float = REALCASE_DAMPER_GAMMA_DEFAULT,
+) -> Dict[int, float]:
     """
     Convert target damper dp at design point into model damper_k.
     solver uses: dp_damper = (damper_k / u(theta)^2) * Q^2
     -> damper_k = dp_target * u(theta_ref)^2 / Q_design^2
     """
-    import math
-
     th = float(DAMPER_TARGET_THETA_DEG)
     if not (0.0 < th <= 90.0):
         raise ValueError("DAMPER_TARGET_THETA_DEG must be in (0, 90]")
-    u = math.sin(math.radians(th))
+
+    u = float(angle_to_u(th, model=str(damper_model), gamma=float(damper_gamma)))
     u = max(u, 1e-6)
 
     out: Dict[int, float] = {}
-    for eid in (EDGE_A, EDGE_C, EDGE_D):
-        q = float(Q_DESIGN[eid])
+    for eid in CAV_EDGES:
+        q = float(q_design_by_edge[eid])
         dp = float(DAMPER_TARGET_DP_PA[eid])
         if q <= 0.0:
-            raise ValueError(f"Q_DESIGN[{eid}] must be > 0")
+            raise ValueError(f"q_design_by_edge[{eid}] must be > 0")
         if dp <= 0.0:
             raise ValueError(f"DAMPER_TARGET_DP_PA[{eid}] must be > 0")
         out[eid] = float(dp * (u * u) / (q * q))
     return out
 
 
-def make_net() -> Network:
+def make_net(
+    *,
+    damper_model: str = REALCASE_DAMPER_MODEL_DEFAULT,
+    damper_gamma: float = REALCASE_DAMPER_GAMMA_DEFAULT,
+    q_design_by_edge: Dict[int, float] | None = None,
+    fan_poly: tuple[float, float, float, float] | None = None,
+) -> Network:
+    q_design = dict(q_design_by_edge) if q_design_by_edge is not None else build_q_design()
+    fan_poly_use = tuple(float(x) for x in (fan_poly if fan_poly is not None else REALCASE_FAN_POLY_DEFAULT))
+    if len(fan_poly_use) != 4:
+        raise ValueError('fan_poly must have 4 coefficients (a,b,c,d)')
+
     nodes = [
         Node(NODE_AMB, "amb_in"),
         Node(NODE_FAN_OUT, "fan_out"),
@@ -281,8 +225,8 @@ def make_net() -> Network:
         Node(NODE_ROOM_D, "room_CD_d"),
     ]
 
-    r_by = _compute_edge_r()
-    damper_k_by = _compute_damper_k()
+    r_by = _compute_edge_r(q_design)
+    damper_k_by = _compute_damper_k(q_design, damper_model=damper_model, damper_gamma=damper_gamma)
 
     edges = [
         Edge(
@@ -290,7 +234,7 @@ def make_net() -> Network:
             frm=NODE_AMB,
             to=NODE_FAN_OUT,
             r=2.0,
-            fan_poly=(-453.49632, 522.288, -257.04, 978.8),
+            fan_poly=fan_poly_use,
             speed_ratio=1.0,
         ),
         Edge(id=EDGE_TRUNK_T1, frm=NODE_FAN_OUT, to=NODE_T1, r=r_by[EDGE_TRUNK_T1]),
@@ -301,20 +245,3 @@ def make_net() -> Network:
     ]
 
     return Network(nodes=nodes, edges=edges, ref_node=NODE_AMB)
-
-
-_tmp = make_net()
-_r_by_eid = {e.id: float(e.r) for e in _tmp.edges if e.id in Q_DESIGN}
-MAXLOAD_EDGE = choose_maxload_edge(Q_DESIGN, _r_by_eid)
-del _tmp, _r_by_eid
-
-SCALING_CASES: List[Tuple[str, List[int]]] = [
-    ("all", [EDGE_A, EDGE_C, EDGE_D]),
-    ("a", [EDGE_A]),
-    ("c", [EDGE_C]),
-    ("d", [EDGE_D]),
-    ("ac", [EDGE_A, EDGE_C]),
-    ("ad", [EDGE_A, EDGE_D]),
-    ("cd", [EDGE_C, EDGE_D]),
-]
-

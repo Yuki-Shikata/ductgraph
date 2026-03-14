@@ -15,7 +15,7 @@ from ductgraph.commissioning_scale import (
 # ----------------------------
 def _make_simple_3term_net(*, r_hard_extra: float = 10.0) -> tuple[Network, dict[int, float], list[int], dict[int, float]]:
     """
-    fan -> junction -> 3 terminals (2 easy + 1 hard=maxload)
+    fan -> junction -> 3 terminals (2 easy + 1 hard=index candidate)
     This matches the original smoke-style structure, but we use it to assert contracts.
     """
     rho, cd = 1.2, 0.65
@@ -132,6 +132,64 @@ def test_solve_cav_at_speed_closes_off_edges_effectively():
     assert leak_closed < leak * 0.3
 
 
+def test_solve_cav_at_speed_off_damper_u_reduces_expk_off_leakage():
+    net, fixed_p, _full_active, _q_design = _make_simple_3term_net(r_hard_extra=0.0)
+
+    s = 0.7
+    active = [1]
+    targets = {1: 0.8}
+    off = [2, 3]
+
+    cav_angle_only = solve_cav_at_speed(
+        net,
+        speed_ratio=s,
+        fan_edge_ids=[0],
+        active_cav_edge_ids=active,
+        targets_q=targets,
+        closed_cav_edge_ids=off,
+        theta_off=0.0,
+        off_damper_u=None,
+        fixed_p=fixed_p,
+        d={},
+        model="expk",
+        gamma=3.0,
+        tol_q=3e-3,
+        max_iters=60,
+        alpha=0.7,
+        H0_gain=1.0,
+        fan_q_init=2.0,
+        fan_q_cap=80.0,
+    )
+    assert cav_angle_only.res.converged
+
+    cav_force_u = solve_cav_at_speed(
+        net,
+        speed_ratio=s,
+        fan_edge_ids=[0],
+        active_cav_edge_ids=active,
+        targets_q=targets,
+        closed_cav_edge_ids=off,
+        theta_off=0.0,
+        off_damper_u=1.0e-3,
+        fixed_p=fixed_p,
+        d={},
+        model="expk",
+        gamma=3.0,
+        tol_q=3e-3,
+        max_iters=60,
+        alpha=0.7,
+        H0_gain=1.0,
+        fan_q_init=2.0,
+        fan_q_cap=80.0,
+    )
+    assert cav_force_u.res.converged
+
+    leak_angle = abs(float(cav_angle_only.res.q[2])) + abs(float(cav_angle_only.res.q[3]))
+    leak_force = abs(float(cav_force_u.res.q[2])) + abs(float(cav_force_u.res.q[3]))
+
+    assert leak_force < leak_angle * 0.1
+
+
 def test_commission_and_scale_reports_each_case_and_speed_ratio_is_linear():
     net, fixed_p, full_active, q_design = _make_simple_3term_net(r_hard_extra=10.0)
 
@@ -144,7 +202,7 @@ def test_commission_and_scale_reports_each_case_and_speed_ratio_is_linear():
     out = commission_and_scale(
         net,
         fan_edge_ids=[0],
-        maxload_edge_id=3,
+        seed_index_edge_id=3,
         full_active_cav_edge_ids=full_active,
         q_design_by_edge=q_design,
         scaling_cases=cases,
@@ -185,7 +243,7 @@ def test_fullopen_undershoot_warning_when_capacity_is_insufficient():
     out = commission_and_scale(
         net,
         fan_edge_ids=[0],
-        maxload_edge_id=3,
+        seed_index_edge_id=3,
         full_active_cav_edge_ids=full_active,
         q_design_by_edge=q_design,
         scaling_cases=cases,
@@ -219,7 +277,7 @@ def test_overshoot_is_warning_not_fail_if_no_undershoot():
     out = commission_and_scale(
         net,
         fan_edge_ids=[0],
-        maxload_edge_id=1,  # choose an easy one as maxload for this test
+        seed_index_edge_id=1,  # choose an easy one as seed index for this test
         full_active_cav_edge_ids=full_active,
         q_design_by_edge=q_design,
         scaling_cases=cases,
@@ -248,7 +306,7 @@ def test_full_load_index_selection_is_seed_independent():
         out = commission_and_scale(
             net,
             fan_edge_ids=[0],
-            maxload_edge_id=seed,
+            seed_index_edge_id=seed,
             full_active_cav_edge_ids=full_active,
             q_design_by_edge=q_design,
             scaling_cases=cases,

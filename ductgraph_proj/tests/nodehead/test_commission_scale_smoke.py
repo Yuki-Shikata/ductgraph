@@ -5,7 +5,7 @@ from ductgraph.commissioning_scale import commission_and_scale
 
 
 def test_commission_and_scale_smoke_runs_and_reports_saturation():
-    # fan -> junction -> 3 terminals (2 easy + 1 hard=maxload)
+    # fan -> junction -> 3 terminals (2 easy + 1 hard=index candidate)
     rho, cd = 1.2, 0.65
     A_easy = 0.06
     A_hard = 0.03
@@ -41,7 +41,7 @@ def test_commission_and_scale_smoke_runs_and_reports_saturation():
     out = commission_and_scale(
         net,
         fan_edge_ids=[0],
-        maxload_edge_id=3,
+        seed_index_edge_id=3,
         full_active_cav_edge_ids=full_active,
         q_design_by_edge=q_design,
         scaling_cases=cases,

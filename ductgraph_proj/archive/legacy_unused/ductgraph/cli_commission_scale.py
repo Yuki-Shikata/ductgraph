@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 from typing import Dict, List, Tuple
 
 from ductgraph.commissioning_scale import commission_and_scale
@@ -45,12 +46,28 @@ def _parse_cases(s: str) -> List[Tuple[str, List[int]]]:
     return out
 
 
+
+def _build_net_from_factory(factory, *, model: str, gamma: float):
+    try:
+        sig = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return factory()
+
+    kwargs = {}
+    if "damper_model" in sig.parameters:
+        kwargs["damper_model"] = str(model)
+    if "damper_gamma" in sig.parameters:
+        kwargs["damper_gamma"] = float(gamma)
+    return factory(**kwargs)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Commission(full-load with maxload band) + Scaling(CAV 0..90 by Broyden).")
 
     ap.add_argument("--factory", required=True, help="Network factory path: module:function (returns Network)")
     ap.add_argument("--fan_edges", required=True, help='fan edge ids. e.g. "0" or "0,5"')
-    ap.add_argument("--maxload_edge", required=True, type=int, help="maxload terminal edge id")
+    ap.add_argument("--full_load_seed_edge", type=int, default=None, help="compat seed edge id (optional)")
+    ap.add_argument("--maxload_edge", type=int, default=None, help=argparse.SUPPRESS)
     ap.add_argument("--full_active", required=True, help='full-load active cav edges. e.g. "1,2,3"')
     ap.add_argument("--q_design", required=True, help='design q per edge. e.g. "1:1.0,2:1.0,3:1.0"')
 
@@ -78,7 +95,7 @@ def main() -> None:
     mod_name, func_name = args.factory.split(":")
     mod = importlib.import_module(mod_name)
     make_net = getattr(mod, func_name)
-    net = make_net()
+    net = _build_net_from_factory(make_net, model=str(args.model), gamma=float(args.gamma))
 
     fixed_p = _parse_map(args.fixed_p)
     if not fixed_p:
@@ -93,10 +110,16 @@ def main() -> None:
     q_design = _parse_map(args.q_design)
     cases = _parse_cases(args.cases)
 
+    seed_edge = args.full_load_seed_edge
+    if seed_edge is None:
+        seed_edge = args.maxload_edge
+    if seed_edge is None:
+        seed_edge = int(full_active[0])
+
     out = commission_and_scale(
         net,
         fan_edge_ids=fan_edges,
-        maxload_edge_id=args.maxload_edge,
+        maxload_edge_id=int(seed_edge),
         full_active_cav_edge_ids=full_active,
         q_design_by_edge=q_design,
         scaling_cases=cases,
@@ -115,7 +138,12 @@ def main() -> None:
     )
 
     print("=== FULL LOAD ===")
-    print(f"speed_full={out.speed_full:.6g}  maxload band q65={out.q65:.6g} q85={out.q85:.6g}  converged={out.res_full.converged}")
+    print(
+        f"speed_full={out.speed_full:.6g} "
+        f"converged={out.res_full.converged} "
+        f"diag={out.full_load_diag} "
+        f"critical_thetas={out.full_load_critical_thetas}"
+    )
 
     print("\n=== SCALING CASES ===")
     for c in out.cases:
